@@ -7,15 +7,15 @@ import paho.mqtt.client as mqtt_client
 import coloredlogs, logging
 from influxdb import InfluxDBClient
 import time
+import argparse
 
-conf = {}
 topics = {}     # topic: details
 
 payloads = {}   # topic: payload
 last_write = {} # topic: last_write
 
-mqtt = None
-influx = None
+mqtt = None     # mqtt client
+influx = None   # influx client
 
 ######################### MQTT Callbacks #########################
 
@@ -38,7 +38,7 @@ def on_message(mqtt, userdata, message):
 
 def process_pool():
     for topic, payload in payloads.items():
-        if topics[topic]['momentary'] == True or topic not in last_write or time.time() - last_write[topic] > conf['min_write_interval']:
+        if topics[topic]['momentary'] == True or topic not in last_write or time.time() - last_write[topic] > args.min_interval:
             last_write[topic] = time.time()
             influx_write(topic, payload)
             del payloads[topic]
@@ -60,10 +60,10 @@ def influx_write(topic, payload):
     influx.write_points([data])
 
 def load_config():
-    global conf, topics, min_write_interval, database
-    logging.info('Loading config...')
+    global topics
+    logging.info('Loading config {}...'.format(args.c))
 
-    with open('logger.conf') as conf_file:
+    with open(args.c) as conf_file:
         conf = json.load(conf_file)
 
     for mes in conf['measurements']:
@@ -85,28 +85,48 @@ def load_config():
                 topic['momentary'] = False
             topics[field['topic']] = topic
 
+def parse_arguments():
+    global args
+    parser = argparse.ArgumentParser(description='Description string')
+    parser.add_argument('-c', metavar='FILE', required=True, help='Comfig file')
+    parser.add_argument('--mhost', default='localhost', metavar='HOST', help='MQTT host')
+    parser.add_argument('--mport', default='1883', type=int, metavar='PORT', help='MQTT port')
+    parser.add_argument('--muser', metavar='USER', help='MQTT user')
+    parser.add_argument('--mpass', metavar='PASS', help='MQTT password')
+    parser.add_argument('--mclient', default='influx-logger', metavar='CLIENT_ID', help='MQTT clint id')
+    parser.add_argument('--ihost', default='localhost', metavar='HOST', help='Influx host')
+    parser.add_argument('--iport', default='8086', type=int, metavar='PORT', help='Influx port')
+    parser.add_argument('--idb', default='mqtt', metavar='DB', help='Influx database')
+    parser.add_argument('--min-interval', default='60', type=int, metavar='DB', help='Min write interval to Influx')
+    parser.add_argument('--debug', default=False, type=bool, help='Enable debug logging')
+    args = parser.parse_args()
+    print(args)
+
 def main():
     global mqtt, influx
-    coloredlogs.install(level=logging.INFO, fmt='%(asctime)s %(levelname)s %(message)s')
-
-    print('<<< Influx MQTT Logger >>>\n')
-
+    parse_arguments()
+    if args.debug:
+        coloredlogs.install(level=logging.DEBUG, fmt='%(asctime)s %(levelname)s %(message)s')
+    else:
+        coloredlogs.install(level=logging.INFO, fmt='%(asctime)s %(levelname)s %(message)s')
+    
     load_config()
     # pprint(topics)
     # pprint(conf)
 
-    logging.info('Connecting to Influx...')
-    influx = InfluxDBClient('localhost', 8086, 'root', 'root', conf['influx_database'])
-    influx.create_database(conf['influx_database'])
+    logging.info('Influx connecting to {}:{} with {} database...'.format(args.ihost, args.iport, args.idb))
+    influx = InfluxDBClient(args.ihost, args.iport, 'root', 'root', args.idb)
+    influx.create_database(args.idb)
 
-    logging.info('MQTT connecting to {}:{}...'.format(conf['mqtt_server'], conf['mqtt_port']))
-    mqtt = mqtt_client.Client(conf['mqtt_client_id'])
+    logging.info('MQTT connecting to {}:{}...'.format(args.mhost, args.mport))
+    mqtt = mqtt_client.Client(args.mclient)
     mqtt.on_connect = on_connect
     mqtt.on_disconnect = on_disconnect
     mqtt.on_message = on_message
-    mqtt.username_pw_set(conf['mqtt_user'], conf['mqtt_password'])
+    if 'muser' in args and 'mport' in args:
+        mqtt.username_pw_set(args.muser, args.mpass)
     mqtt.enable_logger(logging)
-    mqtt.connect(conf['mqtt_server'], conf['mqtt_port'])
+    mqtt.connect(args.mhost, args.mport)
     mqtt.loop_start()
 
     while True:
